@@ -1,0 +1,169 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Jerome Cholewa"
+date: "January 15th 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction and methodology
+
+This study's purpose is to predict how well the subjects exercized based on data collected by sensors placed on their body and on their training tools (dumbbells, ...). More information is available on the <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).
+
+First I did some exploratory analysis of the training data That quickly showed that some variables did not yield any useable information (either had no data like "", or DIV0# or NA). I will come to that in more details below. It was not until my first attempt to predict the outcome with the testing data that I realized that the testing data itself had a lot of variables with only NA's. I then decided to go back to my training data and deleted these variables too, since they would be useless to predict anything. That narrowed down the number of variables significantly from 159 (excluding the outcome **class**) from less than 60, which made the `train()` method work much faster.
+
+## Exploratory analysis
+
+We need to use certain packages for that analysis.
+```{r, results = 'hide'}
+library(caret)
+library(lubridate)
+library(randomForest)
+```
+
+In order to speed up the calculation, I used multi-core usage:
+```{r, results = 'hide'}
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+Read the data in:
+```{r }
+training <- read.csv("~/Documents/Education/Coursera/Datascience with R/8.Machine Learning/Assignment/pml-training.csv")
+testing <- read.csv("~/Documents/Education/Coursera/Datascience with R/8.Machine Learning/Assignment/pml-testing.csv")
+```
+
+Upon plotting some variables, I detected outliers. Here I am giving an example of the **x** axis but the **y** and **z** axis had one outlier exactly on the same row (**5373**), therefore I decided to remove that row.
+
+```{r plot outliers}
+par(mfrow = c(1,1))
+boxplot(training$gyros_forearm_x)
+title("gyros_forearm_x")
+
+training <- training[-5373,]
+```
+
+Then I concluded that the first 4 variables could not have any impact whatsoever in the prediction: X, user_name and the 2 raw time stamps) 
+
+``` {r}
+training <-  training[,-c(1, 2,3,4)]
+```
+
+Now I decided to have a look at the **testing** data (since anyway the last column is NOT the outcome). I saw that lots of columns actually contained only NA's. Therefore I decided to remove these columns from the **training** data since they would be useless to predict the **testibg** data. Later I will remove those same columns from the **testing** data.
+
+```{r, results = 'hide'}
+summary(testing)  # can easiy see whether some variables are full of NA's
+training <- within(training, rm(new_window, num_window,kurtosis_roll_belt, kurtosis_picth_belt,
+                                kurtosis_yaw_belt, skewness_roll_belt, skewness_roll_belt.1, 
+                                skewness_yaw_belt, max_roll_belt, max_picth_belt, max_yaw_belt, min_roll_belt, 
+                                min_pitch_belt, min_yaw_belt, amplitude_roll_belt, amplitude_pitch_belt, 
+                                amplitude_yaw_belt, var_total_accel_belt, avg_roll_belt, 
+                                stddev_roll_belt, var_roll_belt, avg_pitch_belt, stddev_pitch_belt, 
+                                var_pitch_belt, avg_yaw_belt, stddev_yaw_belt, var_yaw_belt,
+                                var_accel_arm, avg_roll_arm, stddev_roll_arm, var_roll_arm, avg_pitch_arm, 
+                                stddev_pitch_arm, var_pitch_arm, avg_yaw_arm, stddev_yaw_arm, var_yaw_arm, 
+                                kurtosis_roll_arm, kurtosis_picth_arm, kurtosis_yaw_arm, 
+                                skewness_roll_arm, skewness_pitch_arm, skewness_yaw_arm, 
+                                max_roll_arm, max_picth_arm, max_yaw_arm, min_roll_arm, min_pitch_arm, 
+                                min_yaw_arm, amplitude_roll_arm, amplitude_pitch_arm, amplitude_yaw_arm, 
+                                kurtosis_roll_dumbbell, kurtosis_picth_dumbbell, kurtosis_yaw_dumbbell, 
+                                skewness_roll_dumbbell, skewness_pitch_dumbbell, skewness_yaw_dumbbell,
+                                max_roll_dumbbell, max_picth_dumbbell, max_yaw_dumbbell, 
+                                min_roll_dumbbell, min_pitch_dumbbell, min_yaw_dumbbell,
+                                amplitude_roll_dumbbell, amplitude_pitch_dumbbell, amplitude_yaw_dumbbell, 
+                                var_accel_dumbbell, avg_roll_dumbbell, stddev_roll_dumbbell,
+                                var_roll_dumbbell, avg_pitch_dumbbell, stddev_pitch_dumbbell, 
+                                var_pitch_dumbbell, avg_yaw_dumbbell, stddev_yaw_dumbbell,
+                                var_yaw_dumbbell, kurtosis_roll_forearm, kurtosis_picth_forearm, 
+                                kurtosis_yaw_forearm, skewness_roll_forearm, skewness_pitch_forearm,
+                                skewness_yaw_forearm, max_roll_forearm, max_picth_forearm, 
+                                max_yaw_forearm, min_roll_forearm, min_pitch_forearm, min_yaw_forearm,
+                                amplitude_roll_forearm, amplitude_pitch_forearm, amplitude_yaw_forearm, 
+                                var_accel_forearm, avg_roll_forearm, stddev_roll_forearm,
+                                var_roll_forearm, avg_pitch_forearm, stddev_pitch_forearm, 
+                                var_pitch_forearm, avg_yaw_forearm, stddev_yaw_forearm,
+                                var_yaw_forearm))
+```
+
+Let's convert the time stamp from factor to time stamp
+```{r}
+training$cvtd_timestamp <- parse_date_time(training$cvtd_timestamp,orders = "dmy HM")
+```
+
+A quick look at the remaining columns of the **training** data shows that now there are no more factor variables except the "classe" column
+
+Let's analyze the time series to find patterns. Offline I checked many plots. Here I am showing only 3 to illustrate my point.
+```{r plot time series}
+par(mfrow = c(1,3))
+plot(training$pitch_arm)
+plot(training$accel_arm_z)
+plot(training$total_accel_belt)
+```
+Since there are no time patterns I remove the time stamp column
+```{r}
+training <- within(training, rm( cvtd_timestamp))
+```
+The remaining columns have mo more NA's
+```{r }
+colSums(training[,-53]) # no NA's
+```
+
+Let's start the analysis, first by setting the seed and using the **randomForest**.
+
+```{r }
+set.seed(1423)
+fit_rf <- randomForest(classe ~ .,method="rf",data=training, ntree = 200)
+predic_rf <- predict(fit_rf, training)
+confusionMatrix(predic_rf,    training$classe) # perfect with 200 trees
+```
+
+The accuracy is perfect in fact (100%). With only 10 trees, the in-sample accuracy is 0.9999. For sure the out-of-sample accuracy will be worse but can be expected to be very high.
+
+Now let's clean the **testing** data in a similar way we did for the **training** data.
+```{r }
+testing2 <- within(testing, rm(kurtosis_roll_belt, kurtosis_picth_belt, kurtosis_yaw_belt, 
+                               skewness_roll_belt, skewness_roll_belt.1, skewness_yaw_belt, 
+                               max_roll_belt, max_picth_belt, max_yaw_belt, min_roll_belt, min_pitch_belt, 
+                               min_yaw_belt, amplitude_roll_belt, amplitude_pitch_belt,
+                               amplitude_yaw_belt, var_total_accel_belt, avg_roll_belt, 
+                               stddev_roll_belt, var_roll_belt, avg_pitch_belt, stddev_pitch_belt, 
+                               var_pitch_belt, avg_yaw_belt, stddev_yaw_belt, var_yaw_belt,var_accel_arm, 
+                               avg_roll_arm, stddev_roll_arm, var_roll_arm, avg_pitch_arm, 
+                               stddev_pitch_arm, var_pitch_arm, avg_yaw_arm, stddev_yaw_arm, var_yaw_arm, 
+                               kurtosis_roll_arm, kurtosis_picth_arm, kurtosis_yaw_arm, 
+                               skewness_roll_arm, skewness_pitch_arm, skewness_yaw_arm, 
+                               max_roll_arm, max_picth_arm, max_yaw_arm, min_roll_arm, min_pitch_arm, 
+                               min_yaw_arm, amplitude_roll_arm, amplitude_pitch_arm, amplitude_yaw_arm,
+                               kurtosis_roll_dumbbell, kurtosis_picth_dumbbell, kurtosis_yaw_dumbbell, 
+                               skewness_roll_dumbbell, skewness_pitch_dumbbell, skewness_yaw_dumbbell,
+                               max_roll_dumbbell, max_picth_dumbbell, max_yaw_dumbbell, 
+                               min_roll_dumbbell, min_pitch_dumbbell, min_yaw_dumbbell,
+                               amplitude_roll_dumbbell, amplitude_pitch_dumbbell, amplitude_yaw_dumbbell, 
+                               var_accel_dumbbell, avg_roll_dumbbell, stddev_roll_dumbbell,
+                               var_roll_dumbbell, avg_pitch_dumbbell, stddev_pitch_dumbbell, 
+                               var_pitch_dumbbell, avg_yaw_dumbbell, stddev_yaw_dumbbell,
+                               var_yaw_dumbbell, kurtosis_roll_forearm, kurtosis_picth_forearm, 
+                               kurtosis_yaw_forearm, skewness_roll_forearm, skewness_pitch_forearm,
+                               skewness_yaw_forearm, max_roll_forearm, max_picth_forearm, 
+                               max_yaw_forearm, min_roll_forearm, min_pitch_forearm, min_yaw_forearm,
+                               amplitude_roll_forearm, amplitude_pitch_forearm, amplitude_yaw_forearm, 
+                               var_accel_forearm, avg_roll_forearm, stddev_roll_forearm,
+                               var_roll_forearm, avg_pitch_forearm, stddev_pitch_forearm, 
+                               var_pitch_forearm, avg_yaw_forearm, stddev_yaw_forearm,
+                               var_yaw_forearm))
+```
+
+In addition we remove the forst 6 columns (X, user_name, the 3 time stamps and the 2 "window" variables).
+```{r }
+testing2 <-  testing2[,-c(1, 2,3,4, 5, 6, 7)]
+```
+
+Finally we predict the testing results
+```{r }
+predic_rf <- predict(fit_rf, testing2)
+predic_rf
+```
